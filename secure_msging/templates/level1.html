@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Level 1 Hybrid Demo</title></head>
+<body>
+  <h2>Level 1: RSA + AES Hybrid (server-side)</h2>
+  <form method="post">
+    <input name="message" placeholder="Enter message" required>
+    <button type="submit">Encrypt</button>
+  </form>
+  {% if result %}
+    <p><strong>Encrypted AES key (base64):</strong> {{ result.enc_key }}</p>
+    <p><strong>IV+TAG (base64):</strong> {{ result.iv }}</p>
+    <p><strong>Ciphertext (base64):</strong> {{ result.ciphertext }}</p>
+    <p><strong>Decrypted:</strong> {{ result.decrypted }}</p>
+  {% endif %}
+  <p><a href="/">Back to Level 4</a></p>
+</body></html>

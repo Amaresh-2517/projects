@@ -1,0 +1,28 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Level 2 Two-User Chat</title></head>
+<body>
+  <h2>Level 2: Two-User Server-Side Chat</h2>
+  <form method="post">
+    <label>Sender
+      <select name="sender">
+        <option>Alice</option>
+        <option>Bob</option>
+      </select>
+    </label>
+    <label>Receiver
+      <select name="receiver">
+        <option>Alice</option>
+        <option>Bob</option>
+      </select>
+    </label>
+    <input name="message" placeholder="Message" required>
+    <button type="submit">Send</button>
+  </form>
+  <hr>
+  {% for m in messages %}
+    <p><strong>{{ m.sender }} → {{ m.receiver }}</strong><br>
+      Ciphertext: {{ m.payload.ciphertext_b64 }}<br>
+      Decrypted: {{ m.decrypted }}</p>
+  {% endfor %}
+  <p><a href="/">Back to Level 4</a></p>
+</body></html>

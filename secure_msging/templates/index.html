@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Level 4 Secure Chat</title>
+  <style>
+    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background:#0f172a; color:#e2e8f0; margin:0; }
+    header { padding:16px 24px; display:flex; align-items:center; justify-content:space-between; backdrop-filter: blur(8px); position:sticky; top:0; background:rgba(15,23,42,0.8); border-bottom:1px solid #1e293b; }
+    main { display:flex; gap:20px; padding:20px; height: calc(100vh - 72px); box-sizing:border-box; }
+    .panel { background:#0b1222; border:1px solid #1f2a44; border-radius:14px; box-shadow:0 18px 40px rgba(0,0,0,0.35); }
+    #users { width:260px; padding:16px; overflow-y:auto; }
+    #chat { flex:1; display:flex; flex-direction:column; }
+    #messages { flex:1; padding:20px; overflow-y:auto; display:flex; flex-direction:column; gap:12px; }
+    .bubble { max-width:70%; padding:12px 14px; border-radius:14px; border:1px solid #1f2a44; background:#11182c; }
+    .out { margin-left:auto; background:#0ea5e9; color:#0b1222; border-color:#38bdf8; }
+    .meta { font-size:12px; opacity:0.8; margin-bottom:4px; }
+    form { display:flex; gap:12px; padding:16px; border-top:1px solid #1f2a44; }
+    textarea { flex:1; background:#0b1222; border:1px solid #1f2a44; color:#e2e8f0; border-radius:12px; padding:12px; resize:none; }
+    button { background:#22c55e; color:#0b1222; border:none; border-radius:12px; padding:12px 18px; font-weight:600; cursor:pointer; }
+    button:hover { filter:brightness(1.05); }
+    .user { padding:10px 12px; border-radius:10px; cursor:pointer; border:1px solid transparent; }
+    .user:hover { background:#11182c; }
+    .user.active { background:#0ea5e9; color:#0b1222; border-color:#38bdf8; }
+    .pill { padding:6px 10px; border-radius:999px; background:#1e293b; font-size:12px; }
+    .warn { color:#fbbf24; font-size:13px; }
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <div style="font-weight:700; letter-spacing:0.3px;">🔐 Secure Messaging (Level 4)</div>
+    <div style="font-size:13px; opacity:0.8;">Client-side RSA + AES-GCM, HMAC, signatures, JWT auth</div>
+  </div>
+  <div style="display:flex; align-items:center; gap:12px;">
+    <span class="pill">{{ current_user.username }}</span>
+    <a href="{{ url_for('logout') }}" style="color:#f97316; text-decoration:none;">Logout</a>
+  </div>
+</header>
+
+<main>
+  <section id="users" class="panel">
+    <h3 style="margin:0 0 10px 0;">Users</h3>
+    <div id="userList">
+      {% for u in users %}
+      <div class="user" data-username="{{ u.username }}">{{ u.username }}</div>
+      {% endfor %}
+    </div>
+    <p class="warn" id="keyStatus"></p>
+    <button id="seed">Seed demo users (Alice/Bob)</button>
+  </section>
+
+  <section id="chat" class="panel">
+    <div id="messages"></div>
+    <form id="sendForm">
+      <textarea id="text" rows="2" placeholder="Type an end-to-end encrypted message..."></textarea>
+      <button type="submit">Send</button>
+    </form>
+  </section>
+</main>
+
+<script>
+const me = "{{ current_user.username }}";
+let currentPeer = null;
+let myKeyPair = null; // RSA-OAEP for enc + sign via RSASSA
+let pollHandle = null;
+const modal = {el:null};
+const pubCache = new Map();
+
+// ---------- PEM helpers ----------
+const stripPem = pem => pem.replace(/-----(BEGIN|END) (PUBLIC|PRIVATE) KEY-----/g,'').replace(/\s+/g,'');
+const pemToBuf = pem => Uint8Array.from(atob(stripPem(pem)), c => c.charCodeAt(0));
+const bufToPem = (buf, type) => {
+  const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const chunks = b64.match(/.{1,64}/g).join('\n');
+  return `-----BEGIN ${type} KEY-----\n${chunks}\n-----END ${type} KEY-----`;
+};
+
+async function importPublicKey(pem){
+  return crypto.subtle.importKey('spki', pemToBuf(pem), {name:'RSA-OAEP', hash:'SHA-256'}, true, ['encrypt']);
+}
+async function importVerifyKey(pem){
+  return crypto.subtle.importKey('spki', pemToBuf(pem), {name:'RSASSA-PKCS1-v1_5', hash:'SHA-256'}, true, ['verify']);
+}
+async function exportPublic(key){
+  const spki = await crypto.subtle.exportKey('spki', key);
+  return bufToPem(spki, 'PUBLIC');
+}
+async function exportPrivate(key){
+  const pkcs8 = await crypto.subtle.exportKey('pkcs8', key);
+  return bufToPem(pkcs8, 'PRIVATE');
+}
+
+// ---------- Identity load/generate ----------
+async function ensureKeys(){
+  const saved = localStorage.getItem(`priv:${me}`);
+  if(saved){
+    myKeyPair = { privateKey: await crypto.subtle.importKey('pkcs8', pemToBuf(saved), {name:'RSA-OAEP', hash:'SHA-256'}, true, ['decrypt']),
+                  publicKey: await importPublicKey(localStorage.getItem(`pub:${me}`)) };
+    keyStatus.textContent = 'Found private key in this browser.';
+    await syncKeyToServer();
+    return;
+  }
+  myKeyPair = await crypto.subtle.generateKey({name:'RSA-OAEP', modulusLength:2048, publicExponent:new Uint8Array([1,0,1]), hash:'SHA-256'}, true, ['encrypt','decrypt']);
+  const pubPem = await exportPublic(myKeyPair.publicKey);
+  const privPem = await exportPrivate(myKeyPair.privateKey);
+  localStorage.setItem(`priv:${me}`, privPem);
+  localStorage.setItem(`pub:${me}`, pubPem);
+  keyStatus.textContent = 'New keys generated and synced to server.';
+  await syncKeyToServer();
+}
+
+// ---------- Messaging ----------
+async function loadMessages(){
+  if(!currentPeer) return;
+  const res = await fetch(`/api/messages/${currentPeer}`);
+  const msgs = await res.json();
+  messages.innerHTML = '';
+  for(const m of msgs){
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble ' + (m.sender === me ? 'out' : 'in');
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = `${m.sender} • ${new Date(m.ts*1000).toLocaleTimeString()}`;
+    bubble.appendChild(meta);
+
+    let text = '[ciphertext]';
+    try{
+      if(m.receiver === me || m.sender === me){
+        text = await decryptForMe(m);
+      }else{
+        text = '(sent)';
+      }
+    }catch(e){ text = '[cannot decrypt: ' + e.message + ']'; }
+    bubble.appendChild(document.createTextNode(text));
+    messages.appendChild(bubble);
+  }
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function startPolling(){
+  if(pollHandle) clearInterval(pollHandle);
+  pollHandle = setInterval(loadMessages, 2000);
+}
+
+async function decryptForMe(m){
+  // use in-memory key pair to avoid drift with localStorage
+  const priv = myKeyPair?.privateKey;
+  if(!priv) throw new Error('no private key loaded');
+  const chosenKey = (m.receiver === me) ? m.enc_key : (m.enc_key_sender || m.enc_key);
+  const encKeyComb = Uint8Array.from(atob(chosenKey), c=>c.charCodeAt(0));
+  const encAes = encKeyComb.slice(0,256);
+  const hmacRaw = encKeyComb.slice(256);
+  const aesRaw = await crypto.subtle.decrypt({name:'RSA-OAEP'}, priv, encAes);
+  const aesKey = await crypto.subtle.importKey('raw', aesRaw, {name:'AES-GCM'}, false, ['decrypt']);
+  const iv = Uint8Array.from(atob(m.iv), c=>c.charCodeAt(0));
+  const ct = Uint8Array.from(atob(m.ciphertext), c=>c.charCodeAt(0));
+  const plaintextBuf = await crypto.subtle.decrypt({name:'AES-GCM', iv}, aesKey, ct);
+  const hk = await crypto.subtle.importKey('raw', hmacRaw, {name:'HMAC', hash:'SHA-256'}, false, ['verify']);
+  const ok = await crypto.subtle.verify('HMAC', hk, Uint8Array.from(atob(m.hmac), c=>c.charCodeAt(0)), ct);
+  const senderPub = await fetchPub(m.sender);
+  const sigOk = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', senderPub.verify, new Uint8Array(atob(m.signature).split('').map(c=>c.charCodeAt(0))), ct);
+  let note = '';
+  if (!ok) note += ' [HMAC FAIL]';
+  if (!sigOk) note += ' [SIGNATURE FAIL]';
+  return new TextDecoder().decode(plaintextBuf) + note;
+}
+
+async function sendMessage(evt){
+  evt.preventDefault();
+  if(!currentPeer) { alert('Pick a user'); return; }
+  const text = document.getElementById('text').value.trim();
+  if(!text) return;
+  const peerData = await fetchPub(currentPeer);
+  const peerKey = peerData.enc;
+  // use in-memory public key to align with private key
+  const selfPub = myKeyPair?.publicKey;
+
+  const aesKey = await crypto.subtle.generateKey({name:'AES-GCM', length:256}, true, ['encrypt','decrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ctBuf = await crypto.subtle.encrypt({name:'AES-GCM', iv}, aesKey, new TextEncoder().encode(text));
+  const aesRaw = await crypto.subtle.exportKey('raw', aesKey);
+  const encKey = await crypto.subtle.encrypt({name:'RSA-OAEP'}, peerKey, aesRaw);
+  const encKeySender = await crypto.subtle.encrypt({name:'RSA-OAEP'}, selfPub, aesRaw);
+
+  const hmacKey = await crypto.subtle.generateKey({name:'HMAC', hash:'SHA-256'}, true, ['sign','verify']);
+  const hmacRaw = await crypto.subtle.exportKey('raw', hmacKey);
+  const hmacTag = await crypto.subtle.sign('HMAC', hmacKey, ctBuf);
+
+  const encKeyCombined = new Uint8Array(encKey.byteLength + hmacRaw.byteLength);
+  encKeyCombined.set(new Uint8Array(encKey), 0);
+  encKeyCombined.set(new Uint8Array(hmacRaw), encKey.byteLength);
+  const encKeySenderCombined = new Uint8Array(encKeySender.byteLength + hmacRaw.byteLength);
+  encKeySenderCombined.set(new Uint8Array(encKeySender), 0);
+  encKeySenderCombined.set(new Uint8Array(hmacRaw), encKeySender.byteLength);
+
+  // Sign ciphertext with same RSA key (demo)
+  const privVerify = await crypto.subtle.importKey('pkcs8', pemToBuf(localStorage.getItem(`priv:${me}`)), {name:'RSASSA-PKCS1-v1_5', hash:'SHA-256'}, true, ['sign']);
+  const signature = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', privVerify, new Uint8Array(ctBuf));
+
+  const resp = await fetch('/api/message', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      receiver: currentPeer,
+      ciphertext: btoa(String.fromCharCode(...new Uint8Array(ctBuf))),
+      encKey: btoa(String.fromCharCode(...encKeyCombined)),
+      encKeySender: btoa(String.fromCharCode(...encKeySenderCombined)),
+      iv: btoa(String.fromCharCode(...iv)),
+      hmac: btoa(String.fromCharCode(...new Uint8Array(hmacTag))),
+      signature: btoa(String.fromCharCode(...new Uint8Array(signature))),
+      keyVersion: peerData.keyVersion || 1
+    })
+  });
+  if(!resp.ok){
+    const err = await resp.text();
+    showModal('Send failed', err);
+    return;
+  }
+  document.getElementById('text').value='';
+  loadMessages();
+}
+
+async function fetchPub(user){
+  if(pubCache.has(user)) return pubCache.get(user);
+  const data = await (await fetch(`/api/pubkey/${user}`)).json();
+  const encKey = await importPublicKey(data.publicKeyPem);
+  const verifyKey = await importVerifyKey(data.publicKeyPem);
+  return {enc: encKey, verify: verifyKey, keyVersion:data.keyVersion};
+}
+
+async function seedUsers(){
+  const demos = [
+    {u:'Alice', p:'demo123'},
+    {u:'Bob', p:'demo123'}
+  ];
+  for(const d of demos){
+    const pair = await crypto.subtle.generateKey({name:'RSA-OAEP', modulusLength:2048, publicExponent:new Uint8Array([1,0,1]), hash:'SHA-256'}, true, ['encrypt','decrypt']);
+    const pub = await exportPublic(pair.publicKey);
+    const priv = await exportPrivate(pair.privateKey);
+    localStorage.setItem(`priv:${d.u}`, priv);
+    localStorage.setItem(`pub:${d.u}`, pub);
+    const res = await fetch('/api/register', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:d.u, password:d.p, publicKeyPem:pub})});
+    if(res.status === 400){ // likely user exists; push key update instead
+      await fetch('/api/keyupdate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({publicKeyPem: pub})});
+    }
+  }
+    keyStatus.textContent = 'Seeded Alice/Bob (password: demo123).';
+}
+
+async function syncKeyToServer(){
+  const pubPem = localStorage.getItem(`pub:${me}`);
+  if(!pubPem) return;
+  await fetch('/api/keyupdate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({publicKeyPem: pubPem})});
+}
+
+function showModal(title, body){
+  if(!modal.el){
+    modal.el = document.createElement('div');
+    modal.el.style.position='fixed';
+    modal.el.style.top='0';modal.el.style.left='0';modal.el.style.right='0';modal.el.style.bottom='0';
+    modal.el.style.background='rgba(0,0,0,0.45)';
+    modal.el.style.display='flex';
+    modal.el.style.alignItems='center';
+    modal.el.style.justifyContent='center';
+    modal.el.innerHTML = `<div style="background:#0b1222;border:1px solid #1f2a44;border-radius:12px;padding:18px;min-width:320px;">
+      <h3 id="mtitle" style="margin:0 0 8px 0;">Error</h3>
+      <pre id="mbody" style="white-space:pre-wrap;font-size:13px;"></pre>
+      <button id="mclose" style="margin-top:10px;background:#22c55e;color:#0b1222;border:none;border-radius:8px;padding:8px 14px;cursor:pointer;">Close</button>
+    </div>`;
+    document.body.appendChild(modal.el);
+    modal.el.querySelector('#mclose').onclick = ()=> modal.el.style.display='none';
+  }
+  modal.el.querySelector('#mtitle').textContent = title;
+  modal.el.querySelector('#mbody').textContent = body;
+  modal.el.style.display='flex';
+}
+
+// ---------- UI wiring ----------
+document.getElementById('sendForm').addEventListener('submit', sendMessage);
+document.querySelectorAll('#userList .user').forEach(el=>{
+  el.onclick = () => {
+    document.querySelectorAll('#userList .user').forEach(u=>u.classList.remove('active'));
+    el.classList.add('active');
+    currentPeer = el.dataset.username;
+    loadMessages();
+    startPolling();
+  };
+});
+document.getElementById('seed').onclick = seedUsers;
+ensureKeys().then(loadMessages);
+</script>
+</body>
+</html>

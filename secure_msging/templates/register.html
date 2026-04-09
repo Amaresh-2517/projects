@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Register - Secure Chat</title>
+  <style>body{font-family:Inter,system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;} .card{background:#0b1222;padding:32px;border-radius:16px;border:1px solid #1f2a44;width:360px;} input{width:100%;padding:12px;border-radius:10px;border:1px solid #1f2a44;background:#0f172a;color:#e2e8f0;margin:8px 0;} button{width:100%;padding:12px;border:none;border-radius:10px;background:#22c55e;color:#0b1222;font-weight:700;cursor:pointer;} a{color:#38bdf8;text-decoration:none;font-size:14px;} .err{color:#f87171;font-size:14px;} .note{font-size:13px;color:#94a3b8;}</style>
+</head>
+<body>
+  <div class="card">
+    <h2>Create account</h2>
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
+    <p class="note">Keys are generated locally and your private key never leaves this browser.</p>
+    <form method="post" id="regForm">
+      <input name="username" id="username" placeholder="Username" required>
+      <input name="password" id="password" type="password" placeholder="Password" required>
+      <input type="hidden" name="public_key_pem" id="public_key_pem">
+      <button type="submit">Register</button>
+    </form>
+    <p style="margin-top:12px;">Have an account? <a href="{{ url_for('login') }}">Login</a></p>
+    <div class="note" id="status">Generating keys…</div>
+  </div>
+
+<script>
+async function generate(){
+  const pair = await crypto.subtle.generateKey({name:'RSA-OAEP', modulusLength:2048, publicExponent:new Uint8Array([1,0,1]), hash:'SHA-256'}, true, ['encrypt','decrypt']);
+  const pub = await crypto.subtle.exportKey('spki', pair.publicKey);
+  const priv = await crypto.subtle.exportKey('pkcs8', pair.privateKey);
+  const toPem = (buf,type)=>`-----BEGIN ${type} KEY-----\n${btoa(String.fromCharCode(...new Uint8Array(buf))).match(/.{1,64}/g).join('\n')}\n-----END ${type} KEY-----`;
+  document.getElementById('public_key_pem').value = toPem(pub,'PUBLIC');
+  const usernameField = document.getElementById('username');
+  const store = ()=>{
+    const name = usernameField.value || 'temp';
+    localStorage.setItem(`priv:${name}`, toPem(priv,'PRIVATE'));
+    localStorage.setItem(`pub:${name}`, toPem(pub,'PUBLIC'));
+  };
+  usernameField.addEventListener('change', store);
+  store();
+  document.getElementById('status').textContent = 'Keys ready. Submit to register.';
+}
+generate();
+</script>
+</body></html>

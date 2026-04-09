@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Login - Secure Chat</title>
+  <style>body{font-family:Inter,system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;} .card{background:#0b1222;padding:32px;border-radius:16px;border:1px solid #1f2a44;width:360px;} input{width:100%;padding:12px;border-radius:10px;border:1px solid #1f2a44;background:#0f172a;color:#e2e8f0;margin:8px 0;} button{width:100%;padding:12px;border:none;border-radius:10px;background:#22c55e;color:#0b1222;font-weight:700;cursor:pointer;} a{color:#38bdf8;text-decoration:none;font-size:14px;} .err{color:#f87171;font-size:14px;}</style>
+</head>
+<body>
+  <div class="card">
+    <h2>Welcome back</h2>
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
+    <form method="post">
+      <input name="username" placeholder="Username" required>
+      <input name="password" type="password" placeholder="Password" required>
+      <button type="submit">Login</button>
+    </form>
+    <p style="margin-top:12px;">No account? <a href="{{ url_for('register') }}">Register</a></p>
+  </div>
+</body></html>
